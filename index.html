@@ -261,8 +261,9 @@ function updateHeaderStat(){
   let _lowRevCnt = 0;
   COMP.forEach(p=>(p._low_sample||[]).forEach(r=>{const rt=parseFloat(r.rating); if(!isNaN(rt)&&rt<=3) _lowRevCnt++;}));
   OWN.forEach(p=>(p._low_sample||[]).forEach(r=>{const rt=parseFloat(r.rating); if(!isNaN(rt)&&rt<=3) _lowRevCnt++;}));
+  const heroCnt = allHeroIngredients(COMP).length;
   document.getElementById('hdrStat').innerHTML =
-    `타사 TOP <b>${COMP.length}</b> · 자사 <b>${OWN.length}</b> · 저평점 리뷰 <b>${_lowRevCnt}</b> · 히어로 성분 <b>${allHeroIngredients(COMP).length}</b>`;
+    `타사 TOP <b>${COMP.length}</b> · 자사 <b>${OWN.length}</b> · 저평점 리뷰 <b>${_lowRevCnt}</b>${heroCnt?` · 히어로 성분 <b>${heroCnt}</b>`:''}`;
 }
 
 // ──────────────── OVERVIEW ────────────────
@@ -292,11 +293,12 @@ function renderOverview(){
       </div>
     </div>
 
-    <div class="two-col">
+    <div class="${heroes.length ? 'two-col' : ''}">
+      ${heroes.length ? `
       <div class="card">
         <h2>🧪 히어로 성분 TOP 10 (타사)</h2>
         <div class="chart-box"><canvas id="heroChart"></canvas></div>
-      </div>
+      </div>` : ''}
       <div class="card">
         <h2>🏷 브랜드별 제품 수 (타사)</h2>
         <div class="chart-box"><canvas id="brandChart"></canvas></div>
@@ -314,12 +316,14 @@ function renderOverview(){
   `;
 
   // Charts
-  const heroEntries = heroes.slice(0,10);
-  new Chart(document.getElementById('heroChart'), {
-    type:'bar',
-    data:{labels:heroEntries.map(([n])=>truncate(n,18)), datasets:[{label:'제품 수', data:heroEntries.map(([,list])=>list.length), backgroundColor:'#67e8f9'}]},
-    options:{indexAxis:'y', plugins:{legend:{display:false}}, scales:{x:{ticks:{color:'#aab1bf',precision:0,stepSize:1},grid:{color:'#2a2f3a'}},y:{ticks:{color:'#aab1bf'}}}}
-  });
+  if (heroes.length) {
+    const heroEntries = heroes.slice(0,10);
+    new Chart(document.getElementById('heroChart'), {
+      type:'bar',
+      data:{labels:heroEntries.map(([n])=>truncate(n,18)), datasets:[{label:'제품 수', data:heroEntries.map(([,list])=>list.length), backgroundColor:'#67e8f9'}]},
+      options:{indexAxis:'y', plugins:{legend:{display:false}}, scales:{x:{ticks:{color:'#aab1bf',precision:0,stepSize:1},grid:{color:'#2a2f3a'}},y:{ticks:{color:'#aab1bf'}}}}
+    });
+  }
   new Chart(document.getElementById('brandChart'), {
     type:'bar',
     data:{labels:topBrands.map(([b])=>truncate(b,16)), datasets:[{label:'제품 수', data:topBrands.map(([,c])=>c), backgroundColor:'#c4b5fd'}]},
@@ -538,6 +542,18 @@ function renderUnmet(){
 // ──────────────── HERO TAB ────────────────
 function renderHero(){
   const heroes = allHeroIngredients(COMP);
+  if (!heroes.length) {
+    view.innerHTML = `
+      <div class="card">
+        <h2>🧪 히어로 성분</h2>
+        <div class="missing" style="padding:32px;text-align:center;font-size:14px">
+          크롤러가 하이브리드 모드로 운영 중이라 자동 분석된 히어로 성분 데이터가 없습니다.<br><br>
+          <b>제품 탐색</b> 탭에서 개별 제품을 클릭한 뒤 <b>"🤖 분석 실행"</b> 버튼을 누르면<br>
+          그 제품의 히어로 성분과 마케팅 메시지를 확인할 수 있어요.
+        </div>
+      </div>`;
+    return;
+  }
   view.innerHTML = `
   <div class="two-col">
     <div class="card">
@@ -837,7 +853,7 @@ function openProduct(p){
         </div>`).join('')}`:''}
       ${mkts.length?`<h3 style="margin-top:16px">📣 마케팅 메시지</h3>${mkts.slice(0,5).map(m=>`<div style="font-size:13px;color:var(--sub);margin:4px 0">· <span class="chip">${esc(m.type||'')}</span> ${esc(m.message||'')}</div>`).join('')}`:''}
       ${clin.length?`<h3 style="margin-top:16px">🧬 임상/클레임</h3>${clin.slice(0,5).map(c=>`<div style="font-size:13px;color:var(--sub);margin:4px 0">· <span class="chip">${esc(c.test_type||'')}</span> ${esc(c.claim||'')}</div>`).join('')}`:''}
-    `:`<div class="missing" style="margin-bottom:12px">Claude 분석 데이터 없음 (리뷰 ${p.review_count_collected||0}개 수집됨)${p.is_own_brand?' · ANTHROPIC_API_KEY 설정 후 재크롤링하면 met/unmet 추가됨':''}</div>`}
+    `:`<div class="missing" style="margin-bottom:12px">분석 데이터 없음 (리뷰 ${p.review_count_collected||0}개 수집됨) · 아래 <b>🤖 분석 실행</b> 버튼으로 즉시 분석 가능</div>`}
     <div id="aiBox" style="margin:16px 0"></div>
     ${((p._low_sample||[]).length) ? `<h3 style="margin-top:16px">😤 평점 낮은순 리뷰 원문 (${(p._low_sample||[]).length}개)</h3>${(p._low_sample||[]).map(r=>`
       <div class="quote" style="border-left-color:var(--bad)">
