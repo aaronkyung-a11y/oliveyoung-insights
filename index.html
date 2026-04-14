@@ -730,16 +730,17 @@ const aiCache = {}; // code → result
 const AI_PROXY_URL = 'https://script.google.com/macros/s/AKfycbxByKYL81FR4DQ3zgdCBsfm710w574R9j5Zhrfrxe4T_s08It1cnEaJu60WdIVwQSNc/exec';
 const KEY_STORAGE = 'oy_dashboard_anthropic_key';
 
-// 프록시가 설정돼있으면 API 키 UI 숨기고 "팀 공용 AI" 배지 표시
-(function(){
-  if (AI_PROXY_URL) {
-    const slot = document.querySelector('.key-slot');
-    if (slot) slot.innerHTML = '<span class="chip met" title="Apps Script 프록시를 통해 회사 공용 키로 호출됩니다">🤖 팀 공용 AI</span>';
-  }
-})();
+function getApiKey(){
+  const el = document.getElementById('apiKey');
+  return el ? (el.value||'').trim() : '';
+}
 
-// 로드 시 저장된 키 복원
-(function(){
+if (AI_PROXY_URL) {
+  // 프록시 모드: API 키 UI 제거 + "팀 공용 AI" 배지만 표시
+  const slot = document.querySelector('.key-slot');
+  if (slot) slot.innerHTML = '<span class="chip met" title="Apps Script 프록시를 통해 회사 공용 키로 호출됩니다">🤖 팀 공용 AI</span>';
+} else {
+  // 개인 키 모드: 저장된 키 복원 + 이벤트 리스너 설정
   try {
     const saved = localStorage.getItem(KEY_STORAGE);
     if (saved){
@@ -748,35 +749,27 @@ const KEY_STORAGE = 'oy_dashboard_anthropic_key';
       document.getElementById('keyDot').classList.add('ok');
     }
   } catch(e){}
-})();
 
-document.getElementById('apiKey').addEventListener('input', (e)=>{
-  const v = e.target.value.trim();
-  const dot = document.getElementById('keyDot');
-  dot.classList.toggle('ok', /^sk-ant-/.test(v));
-  // 저장 체크되어있으면 자동 저장
-  if (document.getElementById('keyRemember').checked){
-    try { localStorage.setItem(KEY_STORAGE, v); } catch(e){}
-  }
-});
-
-document.getElementById('keyRemember').addEventListener('change', (e)=>{
-  const v = document.getElementById('apiKey').value.trim();
-  try {
-    if (e.target.checked && v) localStorage.setItem(KEY_STORAGE, v);
-    else if (!e.target.checked) localStorage.removeItem(KEY_STORAGE);
-  } catch(e){}
-});
-
-document.getElementById('keyClear').addEventListener('click', ()=>{
-  document.getElementById('apiKey').value = '';
-  document.getElementById('keyRemember').checked = false;
-  document.getElementById('keyDot').classList.remove('ok');
-  try { localStorage.removeItem(KEY_STORAGE); } catch(e){}
-});
-
-function getApiKey(){
-  return (document.getElementById('apiKey').value||'').trim();
+  document.getElementById('apiKey').addEventListener('input', (e)=>{
+    const v = e.target.value.trim();
+    document.getElementById('keyDot').classList.toggle('ok', /^sk-ant-/.test(v));
+    if (document.getElementById('keyRemember').checked){
+      try { localStorage.setItem(KEY_STORAGE, v); } catch(e){}
+    }
+  });
+  document.getElementById('keyRemember').addEventListener('change', (e)=>{
+    const v = document.getElementById('apiKey').value.trim();
+    try {
+      if (e.target.checked && v) localStorage.setItem(KEY_STORAGE, v);
+      else if (!e.target.checked) localStorage.removeItem(KEY_STORAGE);
+    } catch(e){}
+  });
+  document.getElementById('keyClear').addEventListener('click', ()=>{
+    document.getElementById('apiKey').value = '';
+    document.getElementById('keyRemember').checked = false;
+    document.getElementById('keyDot').classList.remove('ok');
+    try { localStorage.removeItem(KEY_STORAGE); } catch(e){}
+  });
 }
 
 function renderAiBlock(p){
