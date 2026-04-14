@@ -726,7 +726,17 @@ function closeDrill(){ document.getElementById('drill').classList.remove('show')
 // ──────────────── AI 분석 ────────────────
 const aiCache = {}; // code → result
 
+// 팀 공용 AI 프록시 URL (Apps Script). 비워두면 각자 API 키 입력 방식으로 폴백.
+const AI_PROXY_URL = 'https://script.google.com/macros/s/AKfycbxByKYL81FR4DQ3zgdCBsfm710w574R9j5Zhrfrxe4T_s08It1cnEaJu60WdIVwQSNc/exec';
 const KEY_STORAGE = 'oy_dashboard_anthropic_key';
+
+// 프록시가 설정돼있으면 API 키 UI 숨기고 "팀 공용 AI" 배지 표시
+(function(){
+  if (AI_PROXY_URL) {
+    const slot = document.querySelector('.key-slot');
+    if (slot) slot.innerHTML = '<span class="chip met" title="Apps Script 프록시를 통해 회사 공용 키로 호출됩니다">🤖 팀 공용 AI</span>';
+  }
+})();
 
 // 로드 시 저장된 키 복원
 (function(){
@@ -821,13 +831,14 @@ function renderAiResult(box, res, p){
 }
 
 async function runAi(p){
-  const key = getApiKey();
   const status = document.getElementById('aiStatus');
-  if (!key.startsWith('sk-ant-')){
+  const useProxy = !!AI_PROXY_URL;
+  const key = useProxy ? null : getApiKey();
+  if (!useProxy && !key.startsWith('sk-ant-')){
     status.innerHTML = '<span style="color:var(--bad)">헤더의 API 키 입력란에 Anthropic API 키(sk-ant-...)를 입력해주세요.</span>';
     return;
   }
-  status.innerHTML = '⏳ Claude에 분석 요청 중...';
+  status.innerHTML = useProxy ? '⏳ 팀 공용 AI 프록시에 분석 요청 중...' : '⏳ Claude에 분석 요청 중...';
   document.getElementById('aiRun').disabled = true;
 
   const lows = (p._low_sample||[]).slice(0,15);
@@ -863,21 +874,29 @@ JSON만 응답 (설명 금지):
   "improvement_suggestions": ["개선 제안 1", "개선 제안 2"]
 }`;
 
+  const reqBody = {
+    model: 'claude-sonnet-4-5-20250929',
+    max_tokens: 2000,
+    messages:[{role:'user', content: prompt}]
+  };
+  const fetchOpts = useProxy
+    ? {
+        method:'POST',
+        headers:{'Content-Type':'text/plain;charset=utf-8'}, // Apps Script preflight 회피
+        body: JSON.stringify(reqBody)
+      }
+    : {
+        method:'POST',
+        headers:{
+          'Content-Type':'application/json',
+          'x-api-key': key,
+          'anthropic-version':'2023-06-01',
+          'anthropic-dangerous-direct-browser-access':'true'
+        },
+        body: JSON.stringify(reqBody)
+      };
   try {
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method:'POST',
-      headers:{
-        'Content-Type':'application/json',
-        'x-api-key': key,
-        'anthropic-version':'2023-06-01',
-        'anthropic-dangerous-direct-browser-access':'true'
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-5-20250929',
-        max_tokens: 2000,
-        messages:[{role:'user', content: prompt}]
-      })
-    });
+    const resp = await fetch(useProxy ? AI_PROXY_URL : 'https://api.anthropic.com/v1/messages', fetchOpts);
     if (!resp.ok){
       const txt = await resp.text();
       status.innerHTML = `<span style="color:var(--bad)">API 오류 ${resp.status}: ${esc(txt.slice(0,200))}</span>`;
