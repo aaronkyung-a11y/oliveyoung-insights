@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <title>올리브영 스킨케어 인사이트 · v5</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/docx/7.8.2/docx.js"></script>
 <style>
 :root{
   --bg:#0f1115; --panel:#171a21; --panel2:#1d2029; --border:#2a2f3a;
@@ -127,6 +128,7 @@ hr{border:0;border-top:1px solid var(--border);margin:14px 0}
   <button class="tab" data-tab="unmet">Unmet Needs</button>
   <button class="tab" data-tab="hero">히어로 성분</button>
   <button class="tab" data-tab="own">자사 브랜드</button>
+  <button class="tab" data-tab="plan">🧠 상품기획</button>
 </nav>
 </header>
 
@@ -253,7 +255,7 @@ document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{
 });
 
 function render(tab){
-  const fn = {overview:renderOverview, products:renderProducts, unmet:renderUnmet, hero:renderHero, own:renderOwn}[tab];
+  const fn = {overview:renderOverview, products:renderProducts, unmet:renderUnmet, hero:renderHero, own:renderOwn, plan:renderPlan}[tab];
   view.innerHTML=''; if(fn) fn();
 }
 
@@ -1058,6 +1060,1111 @@ JSON만 응답 (설명 금지):
   }
 }
 document.getElementById('drill').onclick = (e)=>{ if(e.target.id==='drill') closeDrill(); };
+
+// ══════════════════════════════════════════════════════════
+// 🧠 상품기획 마법사
+// ══════════════════════════════════════════════════════════
+const CATEGORIES = ['토너','세럼/앰플','크림','패드','마스크/팩','클렌징','선케어','로션'];
+
+function productCategory(p){
+  const n = (p.name||'').toLowerCase();
+  if (n.includes('토너')) return '토너';
+  if (n.includes('세럼')||n.includes('앰플')||n.includes('에센스')) return '세럼/앰플';
+  if (n.includes('크림')) return '크림';
+  if (n.includes('패드')) return '패드';
+  if (n.includes('마스크')||n.includes('팩')) return '마스크/팩';
+  if (n.includes('클렌')) return '클렌징';
+  if (n.includes('선')||n.includes('sun')) return '선케어';
+  if (n.includes('로션')||n.includes('에멀전')) return '로션';
+  return '기타';
+}
+
+let planState = {
+  step: 0,  // 0 = 모드 선택
+  mode: null, // 'manual' | 'auto'
+  category: null,
+  targetConcern: null,
+  priceRange: null,
+  unmetSelected: [],
+  extraContext: '',  // 트렌드/고객 조사 등 사용자가 붙여넣는 추가 정보
+  generatedPrompt: '',
+  aiResponse: '',
+  parsedPlan: null
+};
+
+function resetPlan(){
+  planState = {step:0, mode:null, category:null, targetConcern:null, priceRange:null, unmetSelected:[], extraContext:'', generatedPrompt:'', aiResponse:'', parsedPlan:null};
+}
+
+function renderPlan(){
+  view.innerHTML = `
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <h2 style="margin:0">🧠 상품기획 마법사${planState.mode==='auto'?' <span class="chip met" style="margin-left:8px;font-size:11px">AI 자동 추천 모드</span>':(planState.mode==='manual'?' <span class="chip hero" style="margin-left:8px;font-size:11px">수동 선택 모드</span>':'')}</h2>
+      ${planState.step>0?`<div style="display:flex;gap:6px">
+        ${[1,2,3,4].map(n=>`<div class="step-dot ${planState.step===n?'active':''} ${planState.step>n?'done':''}" data-n="${n}">${n}</div>`).join('')}
+      </div>`:''}
+    </div>
+    <p style="color:var(--sub);font-size:13px;margin:-8px 0 20px">
+      카테고리 + Unmet Need를 고르면 <b>AI에게 보낼 완성된 프롬프트</b>를 만들어드려요.<br>
+      구독 중인 ChatGPT / Claude / Gemini에 붙여넣고 결과를 다시 가져오면 Word 기획서로 변환됩니다.
+    </p>
+    <div id="planBody"></div>
+  </div>
+  <style>
+    .step-dot{width:28px;height:28px;border-radius:50%;background:var(--panel2);border:1px solid var(--border);color:var(--sub);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600}
+    .step-dot.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+    .step-dot.done{background:var(--good);color:#fff;border-color:var(--good)}
+    .plan-opt{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:10px 14px;cursor:pointer;font-size:13px;color:var(--text);margin:4px;display:inline-block}
+    .plan-opt:hover{border-color:var(--accent)}
+    .plan-opt.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+    .plan-input{background:var(--panel2);border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:8px;font-size:13px;width:100%;font-family:inherit}
+    .plan-btn{background:var(--accent);color:#fff;border:none;padding:10px 20px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;margin-top:12px}
+    .plan-btn:disabled{opacity:.5;cursor:not-allowed}
+    .plan-btn.secondary{background:var(--panel2);color:var(--text);border:1px solid var(--border)}
+    .plan-sect{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:14px;margin:10px 0}
+    .plan-sect h4{margin:0 0 8px;font-size:14px}
+    .plan-editable{background:var(--panel);border:1px dashed var(--border);border-radius:6px;padding:8px 12px;margin:4px 0;font-size:13px;min-height:28px}
+    .plan-editable:focus{outline:none;border-style:solid;border-color:var(--accent)}
+  </style>
+  `;
+  renderPlanStep();
+}
+
+function renderPlanStep(){
+  const body = document.getElementById('planBody');
+  if (!body) return;
+  if (planState.step === 0) renderPlanStep0(body);
+  else if (planState.step === 1) renderPlanStep1(body);
+  else if (planState.step === 2) renderPlanStep2(body);
+  else if (planState.step === 3) renderPlanStep3(body);
+  else if (planState.step === 4) renderPlanStep4(body);
+}
+
+// ─── STEP 0: 모드 선택 ───
+function renderPlanStep0(body){
+  body.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+      <div class="plan-sect" style="cursor:pointer;padding:22px" id="modeManual">
+        <div style="font-size:28px;margin-bottom:8px">🎯</div>
+        <h4 style="margin:0 0 8px;font-size:15px">수동 선택 모드</h4>
+        <div style="font-size:13px;color:var(--sub);line-height:1.6">
+          내가 카테고리와 타겟을 먼저 정해요. 명확한 방향이 있을 때 적합.
+          <ul style="margin:8px 0 0;padding-left:18px;font-size:12px">
+            <li>카테고리 선택 (토너/세럼/크림 등)</li>
+            <li>타겟 고민 + 가격대 선택</li>
+            <li>그 카테고리의 Unmet Needs 중에서 풀 것 선택</li>
+          </ul>
+        </div>
+      </div>
+      <div class="plan-sect" style="cursor:pointer;padding:22px;border-color:var(--accent)" id="modeAuto">
+        <div style="font-size:28px;margin-bottom:8px">🤖</div>
+        <h4 style="margin:0 0 8px;font-size:15px">AI 자동 추천 모드</h4>
+        <div style="font-size:13px;color:var(--sub);line-height:1.6">
+          전체 데이터를 주고 카테고리부터 AI가 추천. 어디에 기회가 있는지 모를 때.
+          <ul style="margin:8px 0 0;padding-left:18px;font-size:12px">
+            <li>모든 카테고리 Unmet Needs 종합 검토</li>
+            <li>AI가 <b>가장 큰 기회 카테고리</b> 추천</li>
+            <li>바로 신제품 컨셉까지 기획</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  `;
+  document.getElementById('modeManual').onclick = ()=>{
+    planState.mode = 'manual';
+    planState.step = 1;
+    renderPlan();
+  };
+  document.getElementById('modeAuto').onclick = ()=>{
+    planState.mode = 'auto';
+    planState.step = 1;
+    renderPlan();
+  };
+}
+
+// ─── STEP 1: 카테고리(수동) 또는 필터(자동) ───
+function renderPlanStep1(body){
+  const isAuto = planState.mode === 'auto';
+  body.innerHTML = `
+    <div style="margin-bottom:10px">
+      <button class="plan-btn secondary" onclick="planState.step=0;renderPlan()" style="font-size:12px;padding:6px 12px">← 모드 다시 선택</button>
+    </div>
+    ${!isAuto ? `
+    <div class="plan-sect">
+      <h4>1️⃣ 어떤 카테고리의 제품을 기획할까요?</h4>
+      <div id="catOpts">${CATEGORIES.map(c=>`<button class="plan-opt ${planState.category===c?'active':''}" data-cat="${c}">${c}</button>`).join('')}</div>
+    </div>` : `
+    <div class="plan-sect" style="background:rgba(139,92,246,0.08)">
+      <h4>🤖 카테고리 선택 생략 — AI가 전체 데이터 분석 후 추천합니다</h4>
+      <p style="font-size:12px;color:var(--sub);margin:4px 0 0">타겟 고민/가격대만 선택하면 AI가 가장 큰 기회 카테고리를 골라 기획합니다.</p>
+    </div>`}
+    <div class="plan-sect">
+      <h4>${isAuto?'1':'2'}️⃣ 어떤 피부 고민을 타겟으로 할까요? <span style="color:var(--sub);font-weight:400;font-size:12px">(선택사항)</span></h4>
+      <div id="concernOpts">
+        ${['보습/속건조','진정/자극','장벽강화','미백/브라이트닝','트러블/여드름','탄력/주름','모공','유수분균형'].map(c=>`<button class="plan-opt ${planState.targetConcern===c?'active':''}" data-c="${c}">${c}</button>`).join('')}
+      </div>
+    </div>
+    <div class="plan-sect">
+      <h4>${isAuto?'2':'3'}️⃣ 가격대 포지셔닝 <span style="color:var(--sub);font-weight:400;font-size:12px">(선택사항)</span></h4>
+      <div id="priceOpts">
+        ${['저가(1~2만원대)','중가(2~5만원대)','고가(5만원 이상)'].map(p=>`<button class="plan-opt ${planState.priceRange===p?'active':''}" data-p="${p}">${p}</button>`).join('')}
+      </div>
+    </div>
+    <div class="plan-sect" style="background:rgba(34,211,238,0.05);border-color:rgba(34,211,238,0.3)">
+      <h4>${isAuto?'3':'4'}️⃣ 시장 트렌드 & 고객 인사이트 <span style="color:var(--sub);font-weight:400;font-size:12px">(선택사항)</span></h4>
+      <p style="font-size:12px;color:var(--sub);margin:-4px 0 10px">
+        리뷰 데이터만으로는 잡히지 않는 최신 트렌드/고객 조사/뉴스 등을 여기 붙여넣으면 AI가 기획에 반영합니다.
+      </p>
+      <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+        <button id="preResearchBtn" class="plan-btn secondary" style="font-size:12px;padding:6px 12px">💡 사전 조사 프롬프트 만들기</button>
+        <span style="font-size:11px;color:var(--muted);align-self:center">웹 검색 가능한 AI(Perplexity/ChatGPT/Gemini)에 먼저 돌려서 결과를 아래에 붙여넣으세요</span>
+      </div>
+      <textarea id="extraCtx" placeholder="예시:\n- 2026년 K-뷰티 트렌드 리포트: 스킨 바리어+더마 코스메틱 강세\n- SNS에서 'PDRN' 해시태그 최근 6개월 3배 증가\n- 20대 후반 타겟 고객 인터뷰: 끈적임 없는 고보습 원함\n- 경쟁사 신제품 출시 동향\n...\n\n자유롭게 붙여넣으시면 AI가 기획에 녹입니다." style="width:100%;min-height:130px;background:var(--panel);border:1px solid var(--border);color:var(--text);padding:10px;border-radius:6px;font-size:12px;line-height:1.5;resize:vertical;font-family:inherit">${esc(planState.extraContext)}</textarea>
+    </div>
+    <button id="planNext1" class="plan-btn" ${(isAuto || planState.category)?'':'disabled'}>다음 → ${isAuto?'AI가 기회 탐색':'시장 분석'}</button>
+  `;
+  body.querySelectorAll('[data-cat]').forEach(b=>b.onclick=()=>{
+    planState.category=b.dataset.cat; renderPlanStep1(body);
+  });
+  body.querySelectorAll('[data-c]').forEach(b=>b.onclick=()=>{
+    planState.targetConcern = planState.targetConcern===b.dataset.c ? null : b.dataset.c;
+    renderPlanStep1(body);
+  });
+  body.querySelectorAll('[data-p]').forEach(b=>b.onclick=()=>{
+    planState.priceRange = planState.priceRange===b.dataset.p ? null : b.dataset.p;
+    renderPlanStep1(body);
+  });
+  document.getElementById('planNext1').onclick = ()=>{
+    // 추가 컨텍스트 저장
+    const ctxEl = document.getElementById('extraCtx');
+    if (ctxEl) planState.extraContext = ctxEl.value.trim();
+
+    if (!isAuto && !planState.category) return;
+    if (isAuto) {
+      planState.generatedPrompt = buildAutoPrompt();
+      planState.step = 3;
+    } else {
+      planState.step = 2;
+    }
+    renderPlan();
+  };
+
+  // 사전 조사 프롬프트 생성
+  document.getElementById('preResearchBtn').onclick = ()=>{
+    const ctxEl = document.getElementById('extraCtx');
+    if (ctxEl) planState.extraContext = ctxEl.value.trim();
+    showPreResearchModal();
+  };
+}
+
+// 사전 조사 프롬프트 모달
+function showPreResearchModal(){
+  const cat = planState.category || '스킨케어 전반';
+  const concern = planState.targetConcern || '(제한 없음)';
+  const prompt = `당신은 한국 뷰티 시장 리서치 전문가입니다. 아래 조건으로 2025년 하반기~2026년 최신 시장 트렌드와 고객 인사이트를 조사해주세요. **가능하면 웹 검색을 활용**해 최신 정보 기반으로 답변하세요.
+
+# 조사 범위
+- 카테고리: ${cat}
+- 타겟 고민: ${concern}
+- 시장: 한국 (K-뷰티), 올리브영 기준
+
+# 조사 항목 (각 항목별로 구체적 근거 포함)
+
+## 1. 떠오르는 히어로 성분 (최근 6~12개월)
+- 어떤 성분이 급부상 중인가? (예: PDRN, 엑소좀, 폴리놀 등)
+- 기존 스타 성분(나이아신아마이드, 히알루론산) 대비 차별화 포인트
+- SNS/커뮤니티/리뷰에서의 언급 증가율 (관찰된 수치/사례)
+
+## 2. 소비자 행동 변화
+- Z세대/밀레니얼 뷰티 구매 트렌드 변화
+- '성분 본능(ingredient conscious)' 관련 최신 경향
+- 올리브영 TOP 카테고리 변동 (무엇이 뜨고 지는가)
+
+## 3. 경쟁사 최근 동향
+- 주요 더마코스메틱 브랜드 신제품 출시
+- 어워드/수상 제품 (올리브영 어워즈 등)
+- 유튜브/인스타 리뷰어가 주목하는 제품
+
+## 4. 아직 리뷰로는 드러나지 않은 고객 니즈
+- 커뮤니티(다이어리/파우더룸/뷰티블로그)에서 올라오는 불만
+- 새로운 피부 고민 (예: 블루라이트 손상, 스트레스 피부)
+- 라이프스타일 변화로 생긴 새로운 니즈 (재택근무, 야외활동 변화 등)
+
+## 5. 규제/인증 트렌드
+- EWG, 비건, Clean Beauty 관련 최신 기준
+- 새로 주목받는 인증 (예: 저자극 테스트, 민감성 피부 적합)
+
+# 출력 형식
+각 섹션별로 2-3개의 핵심 인사이트를 간결하게. 가능하면 출처/근거 명시.
+나중에 상품기획에 재활용할 것이므로 **바로 인용 가능한 팩트 중심**으로 정리해주세요.`;
+
+  const modal = el(`<div class="drill show" id="preResModal">
+    <div class="drill-panel" style="max-width:800px">
+      <button class="drill-close" onclick="document.getElementById('preResModal').remove()">×</button>
+      <h2>💡 사전 조사 프롬프트</h2>
+      <p style="color:var(--sub);font-size:13px">
+        이 프롬프트를 <b>웹 검색 가능한 AI</b>(Perplexity, ChatGPT Plus 웹검색, Gemini 등)에 먼저 돌리세요.<br>
+        결과를 받으면 이전 화면의 "시장 트렌드" 박스에 붙여넣고 계속 진행하시면 됩니다.
+      </p>
+      <div style="display:flex;gap:8px;margin:10px 0;flex-wrap:wrap">
+        <button id="copyPreRes" class="plan-btn" style="background:#10b981">📋 복사</button>
+        <a href="https://perplexity.ai" target="_blank" class="plan-btn secondary" style="text-decoration:none;display:inline-block">Perplexity ↗ (웹검색 기본 탑재)</a>
+        <a href="https://chat.openai.com" target="_blank" class="plan-btn secondary" style="text-decoration:none;display:inline-block">ChatGPT ↗</a>
+        <a href="https://gemini.google.com" target="_blank" class="plan-btn secondary" style="text-decoration:none;display:inline-block">Gemini ↗</a>
+      </div>
+      <textarea id="preResText" readonly style="width:100%;height:320px;background:var(--panel2);border:1px solid var(--border);color:var(--text);padding:12px;border-radius:8px;font-family:ui-monospace,monospace;font-size:11px;line-height:1.5;resize:vertical">${esc(prompt)}</textarea>
+    </div>
+  </div>`);
+  document.body.appendChild(modal);
+  document.getElementById('copyPreRes').onclick = ()=>{
+    navigator.clipboard.writeText(prompt).then(()=>{
+      const b = document.getElementById('copyPreRes');
+      const orig = b.textContent; b.textContent = '✅ 복사됨';
+      setTimeout(()=>b.textContent = orig, 2000);
+    });
+  };
+}
+
+// ─── STEP 2: Unmet Need 선택 ───
+function renderPlanStep2(body){
+  const cat = planState.category;
+  const compInCat = COMP.filter(p => productCategory(p)===cat);
+  const ownInCat = OWN.filter(p => productCategory(p)===cat);
+
+  // Claude 분석된 unmet + 저평점 리뷰 원문 모두 수집
+  const candidates = [];
+  compInCat.forEach(p=>{
+    getUnmets(p).forEach(u=>candidates.push({type:'analyzed', product:p, need:u.need, severity:u.severity, quote:u.representative_quote||(u.verbatim_examples||[])[0]||''}));
+    (p._low_sample||[]).forEach(r=>{
+      const rt = parseFloat(r.rating);
+      if (!isNaN(rt) && rt<=2 && (r.text||'').length>20) {
+        candidates.push({type:'raw', product:p, need:(r.text||'').slice(0,80)+'…', severity:'critical', quote:r.text||''});
+      }
+    });
+  });
+
+  body.innerHTML = `
+    <div class="plan-sect">
+      <h4>📊 "${esc(cat)}" 카테고리 시장 현황</h4>
+      <div style="font-size:13px;color:var(--sub)">
+        타사 제품 <b style="color:var(--text)">${compInCat.length}개</b> · 자사 제품 <b style="color:var(--text)">${ownInCat.length}개</b> · 발견된 불만 포인트 <b style="color:var(--text)">${candidates.length}개</b>
+      </div>
+    </div>
+    <div class="plan-sect">
+      <h4>4️⃣ 해결하고 싶은 Unmet Need를 1~3개 선택하세요</h4>
+      <p style="font-size:12px;color:var(--sub);margin:-4px 0 10px">AI가 이 문제들을 푸는 제품 컨셉을 제안합니다.</p>
+      <div id="unmetPick" style="max-height:420px;overflow-y:auto;padding-right:4px"></div>
+    </div>
+    <button class="plan-btn secondary" onclick="planState.step=1;renderPlan()">← 이전</button>
+    <button id="planNext2" class="plan-btn" ${planState.unmetSelected.length?'':'disabled'}>다음 → 프롬프트 생성 (${planState.unmetSelected.length}/3)</button>
+  `;
+
+  const pick = document.getElementById('unmetPick');
+  if (!candidates.length) {
+    pick.innerHTML = `<div class="missing">"${esc(cat)}" 카테고리의 타사 제품에서 수집된 불만 포인트가 없어요.<br>다른 카테고리를 선택하거나, 제품 드릴에서 AI 분석을 먼저 실행하세요.</div>`;
+  } else {
+    // 중복 제거 (비슷한 need 합치기) + 정렬
+    const unique = [];
+    const seen = new Set();
+    candidates.sort((a,b)=>{
+      const sev = {critical:0,moderate:1,minor:2};
+      return (sev[a.severity]||3) - (sev[b.severity]||3);
+    });
+    for (const c of candidates) {
+      const k = c.need.slice(0,30);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      unique.push(c);
+      if (unique.length >= 40) break;
+    }
+    unique.forEach((c,i)=>{
+      const uid = 'um_'+i;
+      const selected = planState.unmetSelected.some(x=>x.need===c.need && x.product.code===c.product.code);
+      const div = el(`<div class="plan-sect" style="cursor:pointer;margin:6px 0;${selected?'border-color:var(--accent);background:rgba(139,92,246,0.1)':''}" data-uid="${uid}">
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:4px">
+          <span class="chip ${sevCls(c.severity)}">${c.severity||'moderate'}</span>
+          ${c.type==='analyzed'?'<span class="chip met">AI분석</span>':'<span class="chip">리뷰원문</span>'}
+          <span style="font-size:11px;color:var(--sub)">${esc(c.product.brand||'')} · #${c.product.rank}</span>
+        </div>
+        <div style="font-size:13px;font-weight:500">${esc(c.need)}</div>
+        ${c.quote && c.quote!==c.need ? `<div style="font-size:11px;color:var(--sub);margin-top:4px;padding-left:8px;border-left:2px solid var(--border)">"${esc(truncate(c.quote,140))}"</div>`:''}
+      </div>`);
+      div.onclick = ()=>{
+        const idx = planState.unmetSelected.findIndex(x=>x.need===c.need && x.product.code===c.product.code);
+        if (idx>=0) planState.unmetSelected.splice(idx,1);
+        else if (planState.unmetSelected.length<3) planState.unmetSelected.push(c);
+        renderPlanStep2(body);
+      };
+      pick.appendChild(div);
+    });
+  }
+
+  document.getElementById('planNext2').onclick = ()=>{
+    if (!planState.unmetSelected.length) return;
+    planState.generatedPrompt = buildFullPrompt();
+    planState.step=3;
+    renderPlan();
+  };
+}
+
+// ─── 자동 모드 프롬프트 빌더 (카테고리까지 AI가 추천) ───
+function buildAutoPrompt(){
+  // 카테고리별 주요 Unmet 정리
+  const catSummary = {};
+  COMP.forEach(p=>{
+    const c = productCategory(p);
+    if (!catSummary[c]) catSummary[c] = {count:0, unmets:[], lowReviews:[]};
+    catSummary[c].count++;
+    getUnmets(p).forEach(u=>catSummary[c].unmets.push({product:p, need:u.need, severity:u.severity, quote:u.representative_quote||(u.verbatim_examples||[])[0]||''}));
+    (p._low_sample||[]).forEach(r=>{
+      const rt = parseFloat(r.rating);
+      if (!isNaN(rt) && rt<=2 && (r.text||'').length>20) {
+        catSummary[c].lowReviews.push({product:p, rating:rt, text:r.text});
+      }
+    });
+  });
+
+  const ownByCat = {};
+  OWN.forEach(p=>{
+    const c = productCategory(p);
+    (ownByCat[c] = ownByCat[c] || []).push(p);
+  });
+
+  // 카테고리별 요약 섹션 구성
+  const catSections = Object.entries(catSummary).map(([cat, info])=>{
+    const topUnmets = info.unmets.slice(0,5);
+    const topLows = info.lowReviews.slice(0,5);
+    const ownCount = (ownByCat[cat]||[]).length;
+    return `### ${cat} (타사 ${info.count}개, 자사 ${ownCount}개)
+**주요 Unmet / 저평점 포인트:**
+${[...topUnmets.map(u=>`- [${u.product.brand}] ${u.need}${u.quote?` — "${u.quote.slice(0,150)}"`:''}`),
+    ...topLows.map(r=>`- [${r.product.brand} ${r.rating}점] "${r.text.slice(0,150)}"`)
+  ].slice(0,8).join('\n')}`;
+  }).join('\n\n');
+
+  const totalComp = COMP.length;
+  const totalOwn = OWN.length;
+
+  return `당신은 K-뷰티 스킨케어 브랜드 "더랩바이블랑두(The Lab by Blanc Doux)"의 상품기획 전문가입니다.
+아래 시장 데이터 + 트렌드 컨텍스트를 종합해 **가장 큰 기회가 있는 카테고리를 직접 선택**하고 그 카테고리의 신제품 상품기획서를 작성하세요.
+
+# 기획 조건
+${planState.targetConcern?`- **타겟 피부 고민** (참고): ${planState.targetConcern}`:'- 타겟 피부 고민: 제한 없음'}
+${planState.priceRange?`- **가격대 포지셔닝**: ${planState.priceRange}`:'- 가격대: AI가 적절히 제안'}
+
+${planState.extraContext ? `# 📈 시장 트렌드 & 고객 인사이트 (사용자 제공)
+${planState.extraContext}
+
+` : ''}# 🏪 올리브영 리뷰 기반 시장 데이터 (TOP 50 + 더랩바이블랑두 ${totalOwn}개)
+
+${catSections}
+
+# 분석 요청
+
+## Part 1: 카테고리 선택 근거
+위 데이터(리뷰 + 시장 트렌드)를 종합 분석하여:
+1. **가장 큰 시장 기회가 있는 카테고리**를 1개 선택하세요
+2. 선택 이유를 근거 데이터 + 트렌드와 함께 설명
+3. 왜 다른 카테고리가 아닌 이 카테고리인지 비교 언급
+
+## Part 2: 그 카테고리의 신제품 상품기획서
+선택한 카테고리에 대한 **구체적이고 차별화된** 신제품을 기획.
+- **리뷰 데이터**의 Unmet Need를 실제로 해결
+- **시장 트렌드**를 반영해 선제적 포지셔닝
+- 경쟁사에 이미 흔한 접근 피할 것
+- 자사 기존 라인업과 카니발라이제이션되지 않게
+- 마케팅 메시지는 고객이 쓴 언어를 뒤집어 약속
+- 클레임은 구체적 숫자/기간
+
+# 출력 형식
+아래 구조로 **마크다운(Markdown)** 형식으로만 답변하세요. 추가 설명 없이 기획서만.
+
+# 상품기획서: [제품명]
+
+## 0. 카테고리 선정 근거
+- **선택 카테고리**: ...
+- **선정 이유**: (왜 이 카테고리인가 + 데이터 근거)
+- **다른 카테고리 대비 우위**: ...
+
+## 1. 제품 개요
+- **제품명**: (소비자가 기억하기 쉬운 이름 1개)
+- **카테고리**: [선택한 카테고리]
+- **가격 포지셔닝**: ${planState.priceRange||'(제안)'}
+- **핵심 컨셉**: (한 문장)
+
+## 2. 타겟 페르소나
+(나이/라이프스타일/피부상태/구매 행동 - 3-4문장)
+
+## 3. 시장 기회 (Unmet Needs)
+(이 제품이 풀 핵심 불만 3개를 리뷰 원문 인용과 함께)
+
+## 3-1. 시장 트렌드 & 타이밍
+- **반영한 트렌드**: (사용자 제공 컨텍스트 + 본인의 K-뷰티 지식 기반)
+- **출시 타이밍**: 왜 지금인가
+- **예상 시장 수명**: 단기 유행 vs 장기 스테디
+
+## 4. 히어로 성분
+- 성분1: 역할/스토리
+- 성분2: 역할/스토리
+- 성분3: 역할/스토리
+
+## 5. 차별화 포인트
+- 포인트1
+- 포인트2
+- 포인트3
+
+## 6. 타사 대비 우위
+(2-3문장)
+
+## 7. 마케팅 메시지
+- **[Hook]** 한 줄 후킹 카피
+- **[Efficacy]** 효능 클레임
+- **[Social Proof]** 사회적 증거 소구
+- **[Ingredient Story]** 성분 스토리
+- **[Price/Value]** 가격 가치
+
+## 8. 제안 클레임
+- [인체적용시험] 구체적 숫자/기간 포함 클레임
+- [피부과전문의] ...
+- [임상] ...
+
+## 9. 리스크 & 고려사항
+- 리스크1
+- 리스크2
+- 리스크3
+
+## 10. 추천 기획 포인트
+- 포인트1
+- 포인트2
+- 포인트3
+`;
+}
+
+// ─── 프롬프트 빌더 ───
+function buildFullPrompt(){
+  const cat = planState.category;
+  const compInCat = COMP.filter(p => productCategory(p)===cat);
+  const ownInCat = OWN.filter(p => productCategory(p)===cat);
+
+  const unmetsText = planState.unmetSelected.map((u,i)=>
+    `${i+1}. [${u.product.brand}] ${u.need}\n   원문: "${(u.quote||'').replace(/\s+/g,' ').slice(0,300)}"`
+  ).join('\n\n');
+
+  const competitorsText = compInCat.slice(0,15).map(p=>
+    `- ${p.brand} · ${nameOf(p).slice(0,50)} (올영 #${p.rank}위)`
+  ).join('\n');
+
+  const ownText = ownInCat.slice(0,15).map(p=>
+    `- ${nameOf(p).slice(0,60)}`
+  ).join('\n') || '(해당 카테고리 기존 자사 제품 없음)';
+
+  return `당신은 K-뷰티 스킨케어 브랜드 "더랩바이블랑두(The Lab by Blanc Doux)"의 상품기획자입니다.
+아래의 시장 조사 데이터 + 트렌드 컨텍스트를 바탕으로 신제품 상품기획서를 작성해주세요.
+
+# 기획 조건
+- **카테고리**: ${cat}
+${planState.targetConcern?`- **타겟 피부 고민**: ${planState.targetConcern}`:''}
+${planState.priceRange?`- **가격대 포지셔닝**: ${planState.priceRange}`:''}
+
+${planState.extraContext ? `# 📈 시장 트렌드 & 고객 인사이트 (사용자 제공)
+${planState.extraContext}
+
+` : ''}# 해결하고 싶은 Unmet Needs (실제 타사 제품 저평점 리뷰에서 추출)
+${unmetsText}
+
+# 해당 카테고리 경쟁 제품 (올리브영 기준)
+${competitorsText}
+
+# 더랩바이블랑두 기존 ${cat} 제품
+${ownText}
+
+# 작성 지침
+1. **리뷰 Unmet Needs**를 실제로 해결하는 차별화된 컨셉
+2. **시장 트렌드**(제공된 컨텍스트 + 본인의 K-뷰티 지식)를 반영한 선제적 포지셔닝
+3. 경쟁사에 이미 흔한 접근은 피할 것
+4. 자사 기존 라인업과 카니발라이제이션되지 않게 할 것
+5. 마케팅 메시지는 고객이 실제로 쓴 언어(리뷰 원문)를 뒤집어 약속하는 형태로
+6. 클레임은 구체적인 숫자/기간으로 검증 가능한 것으로
+
+# 출력 형식
+아래 구조로 마크다운(Markdown) 형식으로만 답변하세요. 추가 설명 없이 상품기획서만.
+
+# 상품기획서: [제품명]
+
+## 1. 제품 개요
+- **제품명**: (소비자가 기억하기 쉬운 이름 1개)
+- **카테고리**: ${cat}
+- **가격 포지셔닝**: ${planState.priceRange||'(제안)'}
+- **핵심 컨셉**: (한 문장)
+
+## 2. 타겟 페르소나
+(나이/라이프스타일/피부상태/구매 행동 - 3-4문장)
+
+## 3. 시장 기회 (해결할 Unmet Needs)
+(선택된 ${planState.unmetSelected.length}개의 Unmet Need 각각에 대해 설명 + 이 제품이 어떻게 풀지)
+
+## 3-1. 시장 트렌드 & 타이밍
+- **반영한 트렌드**: (사용자 제공 컨텍스트 + K-뷰티 최신 지식 기반)
+- **출시 타이밍**: 왜 지금인가
+- **예상 시장 수명**: 단기 유행 vs 장기 스테디
+
+## 4. 히어로 성분
+- 성분1: 역할/스토리
+- 성분2: 역할/스토리
+- 성분3: 역할/스토리
+
+## 5. 차별화 포인트
+- 포인트1
+- 포인트2
+- 포인트3
+
+## 6. 타사 대비 우위
+(2-3문장)
+
+## 7. 마케팅 메시지
+- **[Hook]** 한 줄 후킹 카피
+- **[Efficacy]** 효능 클레임
+- **[Social Proof]** 사회적 증거 소구
+- **[Ingredient Story]** 성분 스토리
+- **[Price/Value]** 가격 가치
+
+## 8. 제안 클레임 (인체적용시험/임상 등)
+- [인체적용시험] 구체적 숫자/기간 포함 클레임
+- [피부과전문의] ...
+- [임상] ...
+
+## 9. 리스크 & 고려사항
+- 리스크1
+- 리스크2
+- 리스크3
+
+## 10. 추천 기획 포인트
+- 포인트1
+- 포인트2
+- 포인트3
+`;
+}
+
+// ─── STEP 3: 프롬프트 복사 ───
+function renderPlanStep3(body){
+  body.innerHTML = `
+    <div class="plan-sect">
+      <h4>📋 아래 프롬프트를 복사해서 AI에 붙여넣으세요</h4>
+      <p style="font-size:12px;color:var(--sub);margin:-4px 0 10px">
+        Perplexity · ChatGPT · Claude · Gemini 등 어디든 가능 (최신 트렌드 반영엔 <b>Perplexity</b> 추천)
+      </p>
+      <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+        <button id="copyPrompt" class="plan-btn" style="background:#10b981">📋 프롬프트 복사</button>
+        <a href="https://perplexity.ai" target="_blank" class="plan-btn secondary" style="text-decoration:none;display:inline-block">Perplexity ↗</a>
+        <a href="https://claude.ai/new" target="_blank" class="plan-btn secondary" style="text-decoration:none;display:inline-block">Claude ↗</a>
+        <a href="https://chat.openai.com" target="_blank" class="plan-btn secondary" style="text-decoration:none;display:inline-block">ChatGPT ↗</a>
+        <a href="https://gemini.google.com" target="_blank" class="plan-btn secondary" style="text-decoration:none;display:inline-block">Gemini ↗</a>
+      </div>
+      <textarea id="promptText" readonly style="width:100%;height:300px;background:var(--panel);border:1px solid var(--border);color:var(--text);padding:12px;border-radius:8px;font-family:ui-monospace,monospace;font-size:11px;line-height:1.5;resize:vertical">${esc(planState.generatedPrompt)}</textarea>
+    </div>
+    <div class="plan-sect">
+      <h4>💡 사용 방법</h4>
+      <ol style="font-size:13px;padding-left:20px;line-height:1.8">
+        <li>위 <b>"프롬프트 복사"</b> 버튼 클릭 (또는 Ctrl+A → Ctrl+C)</li>
+        <li>사용 중인 AI에 붙여넣기 + 엔터</li>
+        <li>AI가 마크다운 형식으로 상품기획서 응답 (1~2분 소요)</li>
+        <li>AI 응답을 <b>전체 복사</b>해서 다음 단계에 붙여넣기</li>
+      </ol>
+    </div>
+    <button class="plan-btn secondary" onclick="planState.step=${planState.mode==='auto'?1:2};renderPlan()">← 이전</button>
+    <button class="plan-btn" onclick="planState.step=4;renderPlan()">다음 → AI 응답 붙여넣기 →</button>
+  `;
+  document.getElementById('copyPrompt').onclick = ()=>{
+    const ta = document.getElementById('promptText');
+    ta.select();
+    navigator.clipboard.writeText(planState.generatedPrompt).then(()=>{
+      const btn = document.getElementById('copyPrompt');
+      const orig = btn.textContent;
+      btn.textContent = '✅ 복사됨!';
+      setTimeout(()=>{btn.textContent = orig;}, 2000);
+    });
+  };
+}
+
+// ─── STEP 4: AI 응답 붙여넣기 + Word 다운로드 ───
+function renderPlanStep4(body){
+  body.innerHTML = `
+    <div class="plan-sect">
+      <h4>📥 AI가 생성한 상품기획서를 여기에 붙여넣기</h4>
+      <p style="font-size:12px;color:var(--sub);margin:-4px 0 10px">
+        마크다운 형식(# 제목, - 목록 등)으로 받은 응답을 그대로 붙여넣으세요.
+      </p>
+      <textarea id="responseText" placeholder="여기에 AI 응답을 붙여넣으세요...\n\n예시:\n# 상품기획서: 블랑두 씰링 토너 앰플\n\n## 1. 제품 개요\n- 제품명: ..." style="width:100%;height:320px;background:var(--panel);border:1px solid var(--border);color:var(--text);padding:12px;border-radius:8px;font-family:ui-monospace,monospace;font-size:12px;line-height:1.5;resize:vertical">${esc(planState.aiResponse)}</textarea>
+    </div>
+    <div id="previewBox"></div>
+    <button class="plan-btn secondary" onclick="planState.step=3;renderPlan()">← 이전 (프롬프트)</button>
+    <button id="parseBtn" class="plan-btn">👀 미리보기</button>
+    <button id="docxBtn" class="plan-btn" style="background:#2563eb;display:none">📄 Word 다운로드</button>
+    <button class="plan-btn secondary" onclick="resetPlan();renderPlan()">🔄 처음부터</button>
+  `;
+  document.getElementById('parseBtn').onclick = ()=>{
+    const txt = document.getElementById('responseText').value.trim();
+    if (!txt){ alert('응답 내용을 붙여넣어주세요.'); return; }
+    planState.aiResponse = txt;
+    const preview = document.getElementById('previewBox');
+    preview.innerHTML = `
+      <div class="plan-sect" style="background:#fff;color:#1f2937;max-height:520px;overflow-y:auto">
+        ${markdownToHtml(txt)}
+      </div>
+    `;
+    document.getElementById('docxBtn').style.display = 'inline-block';
+  };
+  document.getElementById('docxBtn').onclick = ()=>{
+    const txt = planState.aiResponse || document.getElementById('responseText').value.trim();
+    downloadMarkdownAsDocx(txt);
+  };
+}
+
+// ─── 마크다운 → HTML (미리보기용 간단 파서) ───
+function markdownToHtml(md){
+  const lines = md.split(/\r?\n/);
+  let html = '';
+  let inList = false;
+  for (const line of lines){
+    const trimmed = line.trim();
+    if (/^# /.test(trimmed)) { if(inList){html+='</ul>';inList=false;} html+=`<h2 style="color:#1f2937;margin:18px 0 8px">${esc(trimmed.slice(2))}</h2>`; }
+    else if (/^## /.test(trimmed)) { if(inList){html+='</ul>';inList=false;} html+=`<h3 style="color:#1f2937;margin:14px 0 6px">${esc(trimmed.slice(3))}</h3>`; }
+    else if (/^### /.test(trimmed)) { if(inList){html+='</ul>';inList=false;} html+=`<h4 style="color:#374151;margin:10px 0 4px">${esc(trimmed.slice(4))}</h4>`; }
+    else if (/^[-*] /.test(trimmed)) {
+      if(!inList){ html+='<ul style="margin:4px 0;padding-left:20px">'; inList=true; }
+      const itemText = trimmed.replace(/^[-*]\s*/,'');
+      html+=`<li style="margin:3px 0">${boldify(esc(itemText))}</li>`;
+    }
+    else if (!trimmed) { if(inList){html+='</ul>';inList=false;} html+='<div style="height:6px"></div>'; }
+    else { if(inList){html+='</ul>';inList=false;} html+=`<p style="margin:6px 0">${boldify(esc(trimmed))}</p>`; }
+  }
+  if(inList) html+='</ul>';
+  return html;
+}
+function boldify(s){ return s.replace(/\*\*(.+?)\*\*/g,'<b>$1</b>'); }
+
+// ─── 마크다운 → docx ───
+function downloadMarkdownAsDocx(md){
+  const { Document, Packer, Paragraph, HeadingLevel, TextRun } = docx;
+  const lines = md.split(/\r?\n/);
+  const children = [];
+
+  // 문서 제목 추출
+  const titleMatch = md.match(/^#\s+(.+)/m);
+  const title = titleMatch ? titleMatch[1].replace(/^상품기획서:?\s*/,'') : '상품기획서';
+
+  const parseInline = (text) => {
+    const parts = [];
+    const re = /\*\*(.+?)\*\*/g;
+    let last = 0, m;
+    while((m = re.exec(text))){
+      if (m.index > last) parts.push(new TextRun({text: text.slice(last,m.index)}));
+      parts.push(new TextRun({text: m[1], bold:true}));
+      last = re.lastIndex;
+    }
+    if (last < text.length) parts.push(new TextRun({text: text.slice(last)}));
+    return parts.length ? parts : [new TextRun({text})];
+  };
+
+  for (const line of lines){
+    const t = line.trim();
+    if (/^# /.test(t)) {
+      children.push(new Paragraph({heading: HeadingLevel.HEADING_1, children:[new TextRun({text:t.slice(2), bold:true, size:32})], spacing:{before:240, after:160}}));
+    } else if (/^## /.test(t)) {
+      children.push(new Paragraph({heading: HeadingLevel.HEADING_2, children:[new TextRun({text:t.slice(3), bold:true, size:28})], spacing:{before:200, after:120}}));
+    } else if (/^### /.test(t)) {
+      children.push(new Paragraph({heading: HeadingLevel.HEADING_3, children:[new TextRun({text:t.slice(4), bold:true, size:24})], spacing:{before:160, after:100}}));
+    } else if (/^[-*] /.test(t)) {
+      const itemText = t.replace(/^[-*]\s*/,'');
+      children.push(new Paragraph({children: parseInline(itemText), bullet:{level:0}, spacing:{after:60}}));
+    } else if (!t) {
+      children.push(new Paragraph({text:'', spacing:{after:80}}));
+    } else {
+      children.push(new Paragraph({children: parseInline(t), spacing:{after:80}}));
+    }
+  }
+
+  const doc = new Document({sections:[{properties:{}, children}]});
+  Packer.toBlob(doc).then(blob=>{
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `상품기획서_${title.slice(0,20)}_${new Date().toISOString().slice(0,10)}.docx`;
+    a.click();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+  });
+}
+
+// ─── (아래 기존 AI 호출 코드는 사용 안 함) ───
+async function _deprecated_renderPlanStep3(body){
+  if (!planState.aiConcept) {
+    body.innerHTML = `
+      <div class="plan-sect" style="text-align:center;padding:40px">
+        <div style="font-size:32px;margin-bottom:10px">🤖</div>
+        <div style="font-size:15px;font-weight:600">AI가 컨셉을 기획하는 중...</div>
+        <div style="font-size:12px;color:var(--sub);margin-top:6px">선택한 Unmet Need + 시장 데이터 분석</div>
+        <div id="planSpinner" style="margin-top:20px;font-size:12px;color:var(--sub)">⏳ 15~30초 소요</div>
+      </div>
+    `;
+    return;
+  }
+  const c = planState.aiConcept;
+  body.innerHTML = `
+    <div class="plan-sect">
+      <h4>✨ AI 제안 컨셉</h4>
+      <p style="font-size:12px;color:var(--sub);margin:-4px 0 10px">편집 가능 — 직접 수정하셔도 돼요</p>
+
+      <div style="margin-bottom:12px"><b style="font-size:12px;color:var(--sub)">제품명 후보</b></div>
+      <div id="nameOpts" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">
+        ${(c.name_candidates||[]).map((n,i)=>`<button class="plan-opt ${i===0?'active':''}" data-nidx="${i}">${esc(n)}</button>`).join('')}
+      </div>
+
+      <div><b style="font-size:12px;color:var(--sub)">핵심 컨셉 (한 문장)</b></div>
+      <div class="plan-editable" contenteditable="true" id="eConcept">${esc(c.positioning||'')}</div>
+
+      <div style="margin-top:12px"><b style="font-size:12px;color:var(--sub)">히어로 성분</b></div>
+      <div class="plan-editable" contenteditable="true" id="eHero">${esc((c.hero_ingredients||[]).join(', '))}</div>
+
+      <div style="margin-top:12px"><b style="font-size:12px;color:var(--sub)">타겟 페르소나</b></div>
+      <div class="plan-editable" contenteditable="true" id="ePersona">${esc(c.persona||'')}</div>
+
+      <div style="margin-top:12px"><b style="font-size:12px;color:var(--sub)">핵심 차별화 포인트</b></div>
+      <div class="plan-editable" contenteditable="true" id="eDiff">${esc((c.differentiation||[]).join(' · '))}</div>
+
+      <div style="margin-top:12px"><b style="font-size:12px;color:var(--sub)">타사 대비 우위</b></div>
+      <div class="plan-editable" contenteditable="true" id="eAdv">${esc(c.competitive_advantage||'')}</div>
+    </div>
+    <button class="plan-btn secondary" onclick="planState.step=2;renderPlan()">← 이전</button>
+    <button class="plan-btn secondary" onclick="planState.aiConcept=null;renderPlanStep()">🔄 다시 생성</button>
+    <button id="planNext3" class="plan-btn">다음 → 디테일 생성</button>
+  `;
+  // 선택된 이름 추적
+  planState.selectedNameIdx = 0;
+  body.querySelectorAll('[data-nidx]').forEach(b=>b.onclick=()=>{
+    body.querySelectorAll('[data-nidx]').forEach(x=>x.classList.remove('active'));
+    b.classList.add('active');
+    planState.selectedNameIdx = parseInt(b.dataset.nidx);
+  });
+  document.getElementById('planNext3').onclick = async ()=>{
+    // 편집 내용 반영
+    const c = planState.aiConcept;
+    c.selected_name = c.name_candidates[planState.selectedNameIdx] || c.name_candidates[0];
+    c.positioning = document.getElementById('eConcept').innerText.trim();
+    c.hero_ingredients = document.getElementById('eHero').innerText.split(/[,·]/).map(s=>s.trim()).filter(Boolean);
+    c.persona = document.getElementById('ePersona').innerText.trim();
+    c.differentiation = document.getElementById('eDiff').innerText.split('·').map(s=>s.trim()).filter(Boolean);
+    c.competitive_advantage = document.getElementById('eAdv').innerText.trim();
+    planState.step=4;
+    renderPlan();
+    await generateDetail();
+    renderPlanStep();
+  };
+}
+
+// ─── STEP 4: 디테일 (마케팅 메시지 + 클레임 + 리스크) ───
+async function renderPlanStep4(body){
+  if (!planState.aiDetail) {
+    body.innerHTML = `
+      <div class="plan-sect" style="text-align:center;padding:40px">
+        <div style="font-size:32px;margin-bottom:10px">📝</div>
+        <div style="font-size:15px;font-weight:600">마케팅 메시지 & 클레임 생성 중...</div>
+        <div style="font-size:12px;color:var(--sub);margin-top:6px">고객 언어 반영</div>
+      </div>
+    `;
+    return;
+  }
+  const d = planState.aiDetail;
+  body.innerHTML = `
+    <div class="plan-sect">
+      <h4>📣 마케팅 메시지 초안</h4>
+      ${(d.marketing_messages||[]).map((m,i)=>`
+        <div style="margin:6px 0">
+          <b style="font-size:12px;color:var(--sub)">${esc(m.type||'message')}</b>
+          <div class="plan-editable" contenteditable="true" data-mm="${i}">${esc(m.message||'')}</div>
+        </div>
+      `).join('')}
+    </div>
+    <div class="plan-sect">
+      <h4>🧬 제안 클레임</h4>
+      ${(d.claims||[]).map((c,i)=>`
+        <div style="margin:6px 0">
+          <b style="font-size:12px;color:var(--sub)">${esc(c.test_type||'claim')}</b>
+          <div class="plan-editable" contenteditable="true" data-cl="${i}">${esc(c.claim||'')}</div>
+        </div>
+      `).join('')}
+    </div>
+    <div class="plan-sect">
+      <h4>⚠️ 리스크 & 고려사항</h4>
+      <ul style="margin:0;padding-left:20px;font-size:13px">
+        ${(d.risks||[]).map(r=>`<li style="margin:4px 0">${esc(r)}</li>`).join('')}
+      </ul>
+    </div>
+    <div class="plan-sect">
+      <h4>💡 추천 기획 포인트</h4>
+      <ul style="margin:0;padding-left:20px;font-size:13px">
+        ${(d.recommendations||[]).map(r=>`<li style="margin:4px 0">${esc(r)}</li>`).join('')}
+      </ul>
+    </div>
+    <button class="plan-btn secondary" onclick="planState.step=3;renderPlan()">← 이전</button>
+    <button id="planNext4" class="plan-btn">다음 → 최종 기획서 미리보기</button>
+  `;
+  document.getElementById('planNext4').onclick = ()=>{
+    const d = planState.aiDetail;
+    body.querySelectorAll('[data-mm]').forEach(e=>{
+      const i = parseInt(e.dataset.mm);
+      d.marketing_messages[i].message = e.innerText.trim();
+    });
+    body.querySelectorAll('[data-cl]').forEach(e=>{
+      const i = parseInt(e.dataset.cl);
+      d.claims[i].claim = e.innerText.trim();
+    });
+    planState.step=5;
+    renderPlan();
+  };
+}
+
+// ─── STEP 5: 미리보기 + Word 다운로드 ───
+function renderPlanStep5(body){
+  const c = planState.aiConcept;
+  const d = planState.aiDetail;
+  const name = c.selected_name || c.name_candidates?.[0] || '신제품';
+
+  body.innerHTML = `
+    <div class="plan-sect" style="background:#fff;color:#1f2937;max-height:520px;overflow-y:auto">
+      <h2 style="color:#1f2937;margin:0 0 6px">🧴 상품기획서 (초안)</h2>
+      <div style="font-size:12px;color:#6b7280;margin-bottom:16px">${new Date().toISOString().slice(0,10)} · 더랩바이블랑두 · ${esc(planState.category)}</div>
+
+      <h3 style="color:#1f2937;margin-top:16px">1. 제품 개요</h3>
+      <div style="margin-bottom:4px"><b>제품명:</b> ${esc(name)}</div>
+      <div style="margin-bottom:4px"><b>카테고리:</b> ${esc(planState.category)}</div>
+      ${planState.priceRange?`<div style="margin-bottom:4px"><b>가격 포지셔닝:</b> ${esc(planState.priceRange)}</div>`:''}
+      <div><b>핵심 컨셉:</b> ${esc(c.positioning||'')}</div>
+
+      <h3 style="color:#1f2937;margin-top:16px">2. 타겟 페르소나</h3>
+      <div>${esc(c.persona||'')}</div>
+
+      <h3 style="color:#1f2937;margin-top:16px">3. 시장 기회 (선택한 Unmet Needs)</h3>
+      ${planState.unmetSelected.map((u,i)=>`
+        <div style="margin:8px 0;padding-left:12px;border-left:3px solid #8b5cf6">
+          <b>${i+1}. ${esc(u.need)}</b><br>
+          <span style="color:#6b7280;font-size:12px">출처: ${esc(u.product.brand||'')} · ${esc(u.product.name||'').slice(0,40)}…</span>
+          ${u.quote&&u.quote!==u.need?`<div style="font-size:12px;color:#374151;margin-top:4px;font-style:italic">"${esc(truncate(u.quote,200))}"</div>`:''}
+        </div>
+      `).join('')}
+
+      <h3 style="color:#1f2937;margin-top:16px">4. 히어로 성분</h3>
+      <div>${(c.hero_ingredients||[]).map(h=>`<span style="background:#e0f2fe;color:#075985;padding:3px 9px;border-radius:4px;margin-right:6px;font-size:12px">${esc(h)}</span>`).join('')}</div>
+
+      <h3 style="color:#1f2937;margin-top:16px">5. 차별화 포인트</h3>
+      <ul>${(c.differentiation||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ul>
+
+      <h3 style="color:#1f2937;margin-top:16px">6. 타사 대비 우위</h3>
+      <div>${esc(c.competitive_advantage||'')}</div>
+
+      <h3 style="color:#1f2937;margin-top:16px">7. 마케팅 메시지</h3>
+      ${(d.marketing_messages||[]).map(m=>`<div style="margin:4px 0"><b style="font-size:11px;color:#6b7280">[${esc(m.type||'')}]</b> ${esc(m.message||'')}</div>`).join('')}
+
+      <h3 style="color:#1f2937;margin-top:16px">8. 제안 클레임</h3>
+      ${(d.claims||[]).map(cl=>`<div style="margin:4px 0"><b style="font-size:11px;color:#6b7280">[${esc(cl.test_type||'')}]</b> ${esc(cl.claim||'')}</div>`).join('')}
+
+      <h3 style="color:#1f2937;margin-top:16px">9. 리스크 & 고려사항</h3>
+      <ul>${(d.risks||[]).map(r=>`<li>${esc(r)}</li>`).join('')}</ul>
+
+      <h3 style="color:#1f2937;margin-top:16px">10. 추천 기획 포인트</h3>
+      <ul>${(d.recommendations||[]).map(r=>`<li>${esc(r)}</li>`).join('')}</ul>
+    </div>
+    <button class="plan-btn secondary" onclick="planState.step=4;renderPlan()">← 이전</button>
+    <button id="planDocx" class="plan-btn" style="background:#2563eb">📄 Word(.docx) 다운로드</button>
+    <button class="plan-btn secondary" onclick="resetPlan();renderPlan()">🔄 새로 시작</button>
+  `;
+  document.getElementById('planDocx').onclick = ()=>downloadDocx();
+}
+
+// ─── AI 호출 ───
+async function callClaude(prompt, maxTokens){
+  const reqBody = { model:'claude-sonnet-4-5-20250929', max_tokens: maxTokens||2500, messages:[{role:'user', content: prompt}] };
+  const opts = AI_PROXY_URL
+    ? { method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body: JSON.stringify(reqBody) }
+    : { method:'POST', headers:{'Content-Type':'application/json','x-api-key': getApiKey(),'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'}, body: JSON.stringify(reqBody) };
+  const resp = await fetch(AI_PROXY_URL || 'https://api.anthropic.com/v1/messages', opts);
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  const data = await resp.json();
+  let txt = data.content?.[0]?.text || '';
+  txt = txt.replace(/^```json\s*/,'').replace(/\s*```$/,'').trim();
+  return JSON.parse(txt);
+}
+
+async function generateConcept(){
+  const cat = planState.category;
+  const compInCat = COMP.filter(p => productCategory(p)===cat);
+  const ownInCat = OWN.filter(p => productCategory(p)===cat);
+
+  const unmetsText = planState.unmetSelected.map((u,i)=>
+    `${i+1}. [${u.product.brand}] ${u.need}\n   원문: "${(u.quote||'').slice(0,200)}"`
+  ).join('\n');
+
+  const competitorsText = compInCat.slice(0,10).map(p=>
+    `- ${p.brand} ${nameOf(p).slice(0,40)} (#${p.rank})`
+  ).join('\n');
+
+  const ownText = ownInCat.slice(0,10).map(p=>
+    `- ${nameOf(p).slice(0,50)}`
+  ).join('\n') || '(자사 해당 카테고리 제품 없음)';
+
+  const prompt = `더랩바이블랑두(The Lab by Blanc Doux)를 위한 신제품 상품기획 컨셉을 제안하세요.
+
+## 입력 정보
+- **카테고리**: ${cat}
+${planState.targetConcern?`- **타겟 고민**: ${planState.targetConcern}`:''}
+${planState.priceRange?`- **가격대**: ${planState.priceRange}`:''}
+
+## 해결하고 싶은 Unmet Needs
+${unmetsText}
+
+## 경쟁 제품 (올리브영 TOP)
+${competitorsText}
+
+## 자사 기존 ${cat} 제품
+${ownText}
+
+## 요청
+- 위 Unmet Needs를 실제로 해결하는 **구체적이고 차별화된** 신제품 컨셉을 제안하세요.
+- 경쟁사에 이미 흔한 접근은 피하고, 자사 기존 라인과 카니발라이제이션되지 않게.
+- 제품명 후보는 소비자가 기억하기 쉽고 컨셉이 드러나는 것으로.
+
+JSON만 응답 (설명 금지):
+{
+  "name_candidates": ["제품명 후보1", "후보2", "후보3"],
+  "positioning": "한 문장 포지셔닝 (20자 내외)",
+  "hero_ingredients": ["핵심 성분1", "성분2", "성분3"],
+  "persona": "타겟 페르소나 2-3문장 (나이/라이프스타일/피부상태)",
+  "differentiation": ["차별화1", "차별화2", "차별화3"],
+  "competitive_advantage": "타사 대비 우위 한 문장"
+}`;
+
+  try {
+    planState.aiConcept = await callClaude(prompt, 2000);
+  } catch(e){
+    alert('AI 생성 실패: ' + e.message);
+    planState.step = 2;
+    renderPlan();
+  }
+}
+
+async function generateDetail(){
+  const cat = planState.category;
+  const c = planState.aiConcept;
+  const unmetsText = planState.unmetSelected.map(u=>`- ${u.need}`).join('\n');
+
+  const prompt = `"${c.selected_name || c.name_candidates[0]}" 상품기획의 마케팅/클레임을 작성하세요.
+
+## 제품 정보
+- 카테고리: ${cat}
+- 컨셉: ${c.positioning}
+- 히어로 성분: ${(c.hero_ingredients||[]).join(', ')}
+- 타겟: ${c.persona}
+
+## 풀 불만
+${unmetsText}
+
+## 요청
+- 마케팅 메시지는 고객이 실제로 쓴 언어(저평점 리뷰)를 뒤집어 약속하는 형태로
+- 클레임은 구체적인 숫자/기간으로 검증 가능한 것으로
+
+JSON만 응답:
+{
+  "marketing_messages": [
+    {"type":"efficacy_claim|social_proof|emotional|ingredient_story|price_value", "message":"카피 원문"}
+  ],
+  "claims": [
+    {"test_type":"인체적용시험|임상|피부과전문의|EWG|특허|기타", "claim":"숫자 포함한 구체 클레임"}
+  ],
+  "risks": ["리스크/고려사항 1", "2", "3"],
+  "recommendations": ["추천 기획포인트 1", "2", "3"]
+}`;
+
+  try {
+    planState.aiDetail = await callClaude(prompt, 2000);
+  } catch(e){
+    alert('AI 생성 실패: ' + e.message);
+    planState.step = 3;
+    renderPlan();
+  }
+}
+
+// ─── Word 다운로드 ───
+function downloadDocx(){
+  const { Document, Packer, Paragraph, HeadingLevel, TextRun, AlignmentType } = docx;
+  const c = planState.aiConcept;
+  const d = planState.aiDetail;
+  const name = c.selected_name || c.name_candidates?.[0] || '신제품';
+
+  const h = (text, level) => new Paragraph({
+    heading: level, children:[new TextRun({text, bold:true, size: level===HeadingLevel.HEADING_1?32:(level===HeadingLevel.HEADING_2?26:22)})], spacing:{before:200, after:120}
+  });
+  const p = (text, opts={}) => new Paragraph({children:[new TextRun({text, ...opts})], spacing:{after:80}});
+  const bullet = (text) => new Paragraph({children:[new TextRun(text)], bullet:{level:0}, spacing:{after:60}});
+
+  const children = [
+    h('🧴 상품기획서 (초안)', HeadingLevel.HEADING_1),
+    p(`${new Date().toISOString().slice(0,10)} · 더랩바이블랑두 · ${planState.category}`, {italics:true, color:'666666', size:20}),
+    new Paragraph({text:'', spacing:{after:200}}),
+
+    h('1. 제품 개요', HeadingLevel.HEADING_2),
+    p('제품명: ' + name, {bold:true}),
+    p('카테고리: ' + planState.category),
+    ...(planState.priceRange ? [p('가격 포지셔닝: ' + planState.priceRange)] : []),
+    p('핵심 컨셉: ' + (c.positioning||'')),
+
+    h('2. 타겟 페르소나', HeadingLevel.HEADING_2),
+    p(c.persona||''),
+
+    h('3. 시장 기회 (해결할 Unmet Needs)', HeadingLevel.HEADING_2),
+    ...planState.unmetSelected.flatMap((u,i)=>[
+      p(`${i+1}. ${u.need}`, {bold:true}),
+      p(`출처: ${u.product.brand||''} · ${nameOf(u.product).slice(0,40)}`, {italics:true, size:20, color:'666666'}),
+      ...(u.quote && u.quote!==u.need ? [p(`"${(u.quote||'').slice(0,250)}"`, {italics:true, color:'444444'})] : []),
+    ]),
+
+    h('4. 히어로 성분', HeadingLevel.HEADING_2),
+    ...(c.hero_ingredients||[]).map(x=>bullet(x)),
+
+    h('5. 차별화 포인트', HeadingLevel.HEADING_2),
+    ...(c.differentiation||[]).map(x=>bullet(x)),
+
+    h('6. 타사 대비 우위', HeadingLevel.HEADING_2),
+    p(c.competitive_advantage||''),
+
+    h('7. 마케팅 메시지', HeadingLevel.HEADING_2),
+    ...(d.marketing_messages||[]).flatMap(m=>[
+      p(`[${m.type||''}]`, {bold:true, size:20, color:'666666'}),
+      p(m.message||''),
+    ]),
+
+    h('8. 제안 클레임', HeadingLevel.HEADING_2),
+    ...(d.claims||[]).flatMap(cl=>[
+      p(`[${cl.test_type||''}]`, {bold:true, size:20, color:'666666'}),
+      p(cl.claim||''),
+    ]),
+
+    h('9. 리스크 & 고려사항', HeadingLevel.HEADING_2),
+    ...(d.risks||[]).map(x=>bullet(x)),
+
+    h('10. 추천 기획 포인트', HeadingLevel.HEADING_2),
+    ...(d.recommendations||[]).map(x=>bullet(x)),
+  ];
+
+  const doc = new Document({sections:[{properties:{}, children}]});
+  Packer.toBlob(doc).then(blob=>{
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `상품기획서_${name.replace(/\s+/g,'_')}_${new Date().toISOString().slice(0,10)}.docx`;
+    a.click();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+  });
+}
 
 // init: 데이터 로드 후 렌더
 (async function(){
